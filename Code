@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+  <meta name="theme-color" content="#1a1510"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Sourdough"/>
+  <title>🍞 Sourdough Planner</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:#1a1510;color:#e8dcc8;font-family:Georgia,serif;-webkit-tap-highlight-color:transparent;}
+    input,button{font-family:Georgia,serif;}
+    input[type=number]::-webkit-inner-spin-button{opacity:1;}
+    input[type=time],input[type=datetime-local]{color-scheme:dark;}
+    ::-webkit-scrollbar{width:4px;}
+    ::-webkit-scrollbar-track{background:#1a1510;}
+    ::-webkit-scrollbar-thumb{background:#3a3020;border-radius:2px;}
+  </style>
+  <link rel="manifest" href="manifest.json"/>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState, useEffect} = React;
+
+const DAYS_HR = ["Nedjelja","Ponedjeljak","Utorak","Srijeda","Četvrtak","Petak","Subota"];
+
+const DEFAULT_AVAILABILITY = [
+  {day:1,blocks:[{start:"06:00",end:"07:00"},{start:"16:00",end:"22:00"}]},
+  {day:2,blocks:[{start:"06:00",end:"07:00"},{start:"16:00",end:"22:00"}]},
+  {day:3,blocks:[{start:"06:00",end:"07:00"},{start:"16:00",end:"22:00"}]},
+  {day:4,blocks:[{start:"06:00",end:"07:00"},{start:"16:00",end:"22:00"}]},
+  {day:5,blocks:[{start:"06:00",end:"07:00"},{start:"16:00",end:"22:00"}]},
+  {day:6,blocks:[{start:"06:00",end:"22:00"}]},
+  {day:0,blocks:[{start:"06:00",end:"22:00"}]},
+];
+
+function timeToMin(t){const[h,m]=t.split(":").map(Number);return h*60+m;}
+function addMins(date,mins){return new Date(date.getTime()+mins*60000);}
+function fmtDate(d){return`${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")}.`;}
+function fmtTime(d){return d.toLocaleTimeString("hr",{hour:"2-digit",minute:"2-digit"});}
+function inAvail(dateObj,avail){
+  const dow=dateObj.getDay(),tm=dateObj.getHours()*60+dateObj.getMinutes();
+  const da=avail.find(a=>a.day===dow);
+  if(!da)return false;
+  return da.blocks.some(b=>tm>=timeToMin(b.start)&&tm<=timeToMin(b.end));
+}
+function calcStarterPct(temp,coldH,priority,bulkH){
+  let b=20;
+  if(temp>24)b-=4;else if(temp<20)b+=4;
+  if(coldH>20)b-=5;else if(coldH<8)b+=5;
+  if(priority==="fast")b+=5;else if(priority==="aroma")b-=5;
+  if(bulkH<4)b+=5;else if(bulkH>8)b-=5;
+  return Math.max(5,Math.min(35,Math.round(b)));
+}
+
+function buildTimeline(recipe,proc,bakeDateTime,avail,priority,temp,manualPct){
+  const steps=[];
+  const bake=new Date(bakeDateTime);
+  const coldMin=proc.coldEnabled?(proc.coldMin||8)*60:0;
+  const coldMax=proc.coldEnabled?(proc.coldMax||16)*60:0;
+  const coldActual=proc.coldEnabled?Math.round((coldMin+coldMax)/2):0;
+  const shapeEnd=proc.coldEnabled?addMins(bake,-coldActual):bake;
+  const shapeStart=addMins(shapeEnd,-15);
+  const preShapeDur=proc.preShapeEnabled?30:0;
+  const preShapeStart=proc.preShapeEnabled?addMins(shapeStart,-preShapeDur-5):shapeStart;
+  const sfCount=(proc.sfEnabled?proc.sfCount:0)+(proc.coilEnabled?proc.coilCount:0);
+  const interval=proc.sfInterval||30;
+  const totalFold=sfCount>0?(sfCount-1)*interval+20:0;
+  const lamDur=proc.lamEnabled?20:0;
+  const bulkStart=addMins(preShapeStart,-(totalFold+lamDur+30));
+  const autoDur=proc.autoEnabled?(proc.autoDur||45):0;
+  const autoStart=proc.autoEnabled?addMins(bulkStart,-autoDur):bulkStart;
+  const bulkH=(preShapeStart-bulkStart)/3600000;
+  const starterPct=manualPct||calcStarterPct(temp,coldActual/60,priority,bulkH);
+  let t=autoStart;
+  if(proc.autoEnabled){steps.push({key:"auto",time:new Date(t),label:"Autoliza",icon:"💧",color:"#c8a96e"});t=addMins(t,autoDur);}
+  steps.push({key:"starter",time:new Date(t),label:"Dodavanje startera",icon:"🥄",color:"#a8c5a0"});t=addMins(t,15);
+  if(proc.sfEnabled){for(let i=1;i<=proc.sfCount;i++){steps.push({key:`sf${i}`,time:new Date(t),label:`Stretch & Fold #${i}`,icon:"🤲",color:"#8fb8d4"});t=addMins(t,interval);}}
+  if(proc.coilEnabled){for(let i=1;i<=proc.coilCount;i++){steps.push({key:`coil${i}`,time:new Date(t),label:`Coil Fold #${i}`,icon:"🌀",color:"#b8a0d4"});t=addMins(t,interval);}}
+  if(proc.lamEnabled){steps.push({key:"lam",time:new Date(t),label:"Laminacija",icon:"📄",color:"#d4b8a0"});t=addMins(t,lamDur+10);}
+  if(proc.preShapeEnabled){steps.push({key:"pre",time:new Date(t),label:"Predoblikovanje",icon:"⚪",color:"#d4a0a0"});t=addMins(t,preShapeDur+5);}
+  steps.push({key:"shape",time:shapeStart,label:"Oblikovanje",icon:"🔵",color:"#d47a7a"});
+  if(proc.coldEnabled){steps.push({key:"cold",time:shapeEnd,label:`Hladna fermentacija (${Math.round(coldActual/60)}h)`,icon:"❄️",color:"#7ab8d4"});}
+  steps.push({key:"bake",time:bake,label:"Pečenje",icon:"🔥",color:"#e8824a"});
+  const active=steps.filter(s=>!["cold","bake"].includes(s.key));
+  let status="optimal";
+  for(const s of active){if(!inAvail(s.time,avail)){status="warning";break;}}
+  if(steps[0].time<new Date())status="impossible";
+  return{steps,starterPct,status};
+}
+
+function calcRecipe(f,i,r,hyd,salt,spct){
+  const tot=f+i+r;
+  return{total:tot,water:Math.round(tot*hyd/100),salt:Math.round(tot*salt/100),starter:Math.round(tot*spct/100)};
+}
+
+const S={
+  app:{minHeight:"100vh",background:"#1a1510",color:"#e8dcc8"},
+  hdr:{background:"#211c14",borderBottom:"1px solid #3a3020",padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100},
+  logo:{fontSize:"18px",fontWeight:"bold",color:"#c8a96e"},
+  content:{maxWidth:"600px",margin:"0 auto",padding:"16px"},
+  card:{background:"#211c14",border:"1px solid #3a3020",borderRadius:"12px",padding:"16px",marginBottom:"12px"},
+  lbl:{fontSize:"11px",color:"#8a7a60",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"5px",display:"block"},
+  inp:{background:"#2d2618",border:"1px solid #4a3a28",borderRadius:"8px",color:"#e8dcc8",padding:"9px 12px",fontSize:"15px",width:"100%",outline:"none"},
+  row:{display:"flex",gap:"10px",marginBottom:"10px",flexWrap:"wrap"},
+  col:{flex:1,minWidth:"100px"},
+  sec:{fontSize:"16px",fontWeight:"bold",color:"#c8a96e",marginBottom:"12px"},
+  tog:(on)=>({width:"42px",height:"24px",background:on?"#c8a96e":"#3a3020",borderRadius:"12px",border:"none",cursor:"pointer",position:"relative",transition:"background 0.2s",flexShrink:0}),
+  togD:(on)=>({position:"absolute",width:"18px",height:"18px",background:on?"#1a1510":"#6a5a40",borderRadius:"50%",top:"3px",left:on?"21px":"3px",transition:"left 0.2s"}),
+  tabs:{display:"flex",gap:"3px",marginBottom:"16px",background:"#2d2618",padding:"4px",borderRadius:"10px"},
+  tab:(a)=>({flex:1,padding:"9px 4px",borderRadius:"7px",border:"none",cursor:"pointer",fontSize:"12px",background:a?"#c8a96e":"transparent",color:a?"#1a1510":"#8a7a60",fontWeight:a?"bold":"normal",transition:"all 0.2s"}),
+  btn:{padding:"10px 20px",borderRadius:"8px",border:"none",cursor:"pointer",fontSize:"14px",background:"#c8a96e",color:"#1a1510",fontWeight:"bold"},
+  btnSm:{padding:"6px 12px",borderRadius:"6px",border:"1px solid #4a3a28",cursor:"pointer",fontSize:"12px",background:"transparent",color:"#8a7a60"},
+  macroG:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"},
+  macroI:{background:"#2d2618",borderRadius:"10px",padding:"14px",textAlign:"center"},
+  macroV:{fontSize:"26px",fontWeight:"bold",color:"#c8a96e"},
+  macroL:{fontSize:"11px",color:"#8a7a60",marginTop:"3px"},
+  stepC:(color,done)=>({display:"flex",alignItems:"center",gap:"10px",padding:"12px 14px",borderRadius:"10px",background:done?"#1e1a12":"#2d2618",border:`1px solid ${done?"#3a3020":color+"40"}`,marginBottom:"7px",opacity:done?0.6:1,cursor:"pointer"}),
+  badge:(s)=>{const c={optimal:"#4caf8a",warning:"#c8a94a",impossible:"#c85a5a"}[s]||"#4a3a28";return{display:"inline-flex",alignItems:"center",gap:"6px",padding:"7px 14px",borderRadius:"20px",background:c+"20",border:`1px solid ${c}`,color:c,fontSize:"13px",fontWeight:"bold"};},
+  kitchen:{minHeight:"100vh",background:"#1a1510",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"24px",textAlign:"center"},
+  kitCard:{background:"#211c14",border:"2px solid #c8a96e",borderRadius:"20px",padding:"40px 32px",maxWidth:"400px",width:"100%"},
+};
+
+export default function App(){
+  const [view,setView]=useState("planner");
+  const [tab,setTab]=useState("recipe");
+  const [recipe,setRecipe]=useState({flour:400,integralFlour:50,ryeFlour:50,hydration:75,saltPct:2});
+  const [temp,setTemp]=useState(22);
+  const [priority,setPriority]=useState("balanced");
+  const [manualOverride,setManualOverride]=useState(false);
+  const [manualPct,setManualPct]=useState(20);
+  const [proc,setProc]=useState({autoEnabled:true,autoDur:45,sfEnabled:true,sfCount:3,sfInterval:30,coilEnabled:false,coilCount:2,coilInterval:30,lamEnabled:false,preShapeEnabled:true,coldEnabled:true,coldMin:10,coldMax:16});
+  const [avail,setAvail]=useState(DEFAULT_AVAILABILITY);
+  const [bakeDate,setBakeDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()+2);d.setHours(18,0,0,0);return d.toISOString().slice(0,16);});
+  const [kStep,setKStep]=useState(0);
+  const [done,setDone]=useState({});
+  const [saved,setSaved]=useState(()=>{try{return JSON.parse(localStorage.getItem("sp_r")||"[]");}catch{return[];}});
+  const [rName,setRName]=useState("");
+  const [now,setNow]=useState(new Date());
+
+  useEffect(()=>{const i=setInterval(()=>setNow(new Date()),10000);return()=>clearInterval(i);},[]);
+
+  const tl=bakeDate?(()=>{try{return buildTimeline(recipe,proc,bakeDate,avail,priority,temp,manualOverride?manualPct:null);}catch{return null;}})():null;
+  const calc=calcRecipe(recipe.flour,recipe.integralFlour,recipe.ryeFlour,recipe.hydration,recipe.saltPct,tl?.starterPct||20);
+
+  const saveR=()=>{if(!rName.trim())return;const r={name:rName,recipe,proc,id:Date.now()};const u=[...saved,r];setSaved(u);localStorage.setItem("sp_r",JSON.stringify(u));setRName("");};
+  const loadR=(r)=>{setRecipe(r.recipe);setProc(r.proc);};
+  const delR=(id)=>{const u=saved.filter(r=>r.id!==id);setSaved(u);localStorage.setItem("sp_r",JSON.stringify(u));};
+
+  const statusInfo={
+    optimal:{e:"🟢",t:"Optimalno"},
+    warning:{e:"🟡",t:"Moguće (nije idealno)"},
+    impossible:{e:"🔴",t:"Nije moguće"},
+  };
+
+  // KITCHEN MODE
+  if(view==="kitchen"){
+    const step=tl?.steps[kStep];
+    const next=tl?.steps[kStep+1];
+    const mins=next?Math.round((next.time-now)/60000):null;
+    const total=tl?.steps.length||0;
+    return(
+      <div style={S.kitchen}>
+        <div style={S.kitCard}>
+          <div style={{fontSize:"12px",color:"#8a7a60",marginBottom:"20px"}}>Korak {kStep+1} / {total}</div>
+          {step?(
+            <>
+              <div style={{fontSize:"48px",marginBottom:"8px"}}>{step.icon}</div>
+              <div style={{fontSize:"60px",fontWeight:"bold",color:"#c8a96e",lineHeight:1,marginBottom:"6px"}}>{fmtTime(step.time)}</div>
+              <div style={{fontSize:"22px",color:"#e8dcc8",marginBottom:"24px"}}>{step.label}</div>
+              {next&&<div style={{fontSize:"14px",color:"#8a7a60",marginBottom:"20px"}}>{mins>0?`Sljedeći korak za ${mins} min`:`Sljedeći: ${next.label}`}</div>}
+              {!next&&<div style={{color:"#c8a96e",marginBottom:"20px"}}>Zadnji korak! 🎉</div>}
+              <div style={{display:"flex",gap:"10px",justifyContent:"center"}}>
+                {kStep>0&&<button style={S.btnSm} onClick={()=>setKStep(s=>s-1)}>← Nazad</button>}
+                {kStep<total-1&&<button style={S.btn} onClick={()=>{setDone(p=>({...p,[step.key]:true}));setKStep(s=>s+1);}}>✔ Gotovo</button>}
+              </div>
+            </>
+          ):<div style={{color:"#8a7a60"}}>Nema koraka</div>}
+          <div style={{marginTop:"24px"}}>
+            <button style={S.btnSm} onClick={()=>setView("planner")}>← Planner</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return(
+    <div style={S.app}>
+      {/* HEADER */}
+      <header style={S.hdr}>
+        <div style={S.logo}>🍞 Sourdough Planner</div>
+        <div style={{display:"flex",gap:"6px"}}>
+          {tl&&<button style={{...S.btnSm,fontSize:"13px"}} onClick={()=>{setKStep(0);setView("kitchen");}}>🍴 Kuhinja</button>}
+        </div>
+      </header>
+
+      <div style={S.content}>
+        {/* TABS */}
+        <div style={S.tabs}>
+          {[["recipe","🌾 Recept"],["process","⚙️ Proces"],["schedule","📅 Raspored"],["timeline","⏱ Timeline"]].map(([k,l])=>(
+            <button key={k} style={S.tab(tab===k)} onClick={()=>setTab(k)}>{l}</button>
+          ))}
+        </div>
+
+        {/* ── RECEPT ── */}
+        {tab==="recipe"&&(<>
+          <div style={S.card}>
+            <div style={S.sec}>🌾 Brašno</div>
+            <div style={S.row}>
+              {[["Bijelo (g)","flour"],["Integralno (g)","integralFlour"],["Raženo (g)","ryeFlour"]].map(([l,k])=>(
+                <div key={k} style={S.col}>
+                  <label style={S.lbl}>{l}</label>
+                  <input style={S.inp} type="number" value={recipe[k]} onChange={e=>setRecipe(r=>({...r,[k]:+e.target.value}))} min={0}/>
+                </div>
+              ))}
+            </div>
+            <div style={S.row}>
+              <div style={S.col}><label style={S.lbl}>Hidratacija (%)</label><input style={S.inp} type="number" value={recipe.hydration} onChange={e=>setRecipe(r=>({...r,hydration:+e.target.value}))} min={60} max={100}/></div>
+              <div style={S.col}><label style={S.lbl}>Sol (%)</label><input style={S.inp} type="number" value={recipe.saltPct} onChange={e=>setRecipe(r=>({...r,saltPct:+e.target.value}))} min={1} max={3} step={0.1}/></div>
+              <div style={S.col}><label style={S.lbl}>Temp (°C)</label><input style={S.inp} type="number" value={temp} onChange={e=>setTemp(+e.target.value)} min={16} max={32}/></div>
+            </div>
+          </div>
+
+          <div style={S.card}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px"}}>
+              <div style={S.sec}>🥄 Starter</div>
+              <label style={{display:"flex",alignItems:"center",gap:"8px",cursor:"pointer",fontSize:"12px",color:"#8a7a60"}}>
+                <button style={S.tog(manualOverride)} onClick={()=>setManualOverride(o=>!o)}><div style={S.togD(manualOverride)}/></button>
+                Manual
+              </label>
+            </div>
+            {manualOverride
+              ?<div style={S.col}><label style={S.lbl}>Starter (%)</label><input style={S.inp} type="number" value={manualPct} onChange={e=>setManualPct(+e.target.value)} min={5} max={50}/></div>
+              :<div style={{color:"#8a7a60",fontSize:"13px"}}>Auto: <span style={{color:"#c8a96e",fontWeight:"bold"}}>{tl?.starterPct||"–"}%</span></div>
+            }
+          </div>
+
+          <div style={S.card}>
+            <div style={S.sec}>📊 Izračun</div>
+            <div style={S.macroG}>
+              {[["Brašno",calc.total+"g"],["Voda",calc.water+"g"],["Sol",calc.salt+"g"],["Starter "+(tl?.starterPct||"–")+"%",calc.starter+"g"]].map(([l,v])=>(
+                <div key={l} style={S.macroI}><div style={S.macroV}>{v}</div><div style={S.macroL}>{l}</div></div>
+              ))}
+            </div>
+          </div>
+
+          <div style={S.card}>
+            <div style={S.sec}>🎯 Prioritet</div>
+            <div style={S.row}>
+              {[["fast","⚡ Brzo"],["balanced","⚖️ Balanced"],["aroma","🌟 Aroma"]].map(([k,l])=>(
+                <button key={k} style={{...S.btnSm,flex:1,padding:"9px",background:priority===k?"#c8a96e20":"transparent",color:priority===k?"#c8a96e":"#8a7a60",border:`1px solid ${priority===k?"#c8a96e":"#3a3020"}`}} onClick={()=>setPriority(k)}>{l}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={S.card}>
+            <div style={S.sec}>🔥 Željeno pečenje</div>
+            <input style={S.inp} type="datetime-local" value={bakeDate} onChange={e=>setBakeDate(e.target.value)}/>
+          </div>
+
+          <div style={S.card}>
+            <div style={S.sec}>💾 Spremi recept</div>
+            <div style={{display:"flex",gap:"8px"}}>
+              <input style={{...S.inp,flex:1}} placeholder="Naziv recepta..." value={rName} onChange={e=>setRName(e.target.value)}/>
+              <button style={S.btn} onClick={saveR}>Spremi</button>
+            </div>
+            {saved.length>0&&<div style={{marginTop:"12px"}}>{saved.map(r=>(
+              <div key={r.id} style={{display:"flex",gap:"6px",marginBottom:"6px"}}>
+                <button style={{...S.btnSm,flex:1,textAlign:"left"}} onClick={()=>loadR(r)}>📋 {r.name}</button>
+                <button style={{...S.btnSm,color:"#c85a5a"}} onClick={()=>delR(r.id)}>✕</button>
+              </div>
+            ))}</div>}
+          </div>
+        </>)}
+
+        {/* ── PROCES ── */}
+        {tab==="process"&&(<>
+          {[
+            {key:"auto",label:"💧 Autoliza",enabled:"autoEnabled",extra:<div style={S.row}><div style={S.col}><label style={S.lbl}>Trajanje (min)</label><input style={S.inp} type="number" value={proc.autoDur} onChange={e=>setProc(p=>({...p,autoDur:+e.target.value}))} min={20} max={120}/></div></div>},
+            {key:"sf",label:"🤲 Stretch & Fold",enabled:"sfEnabled",extra:<div style={S.row}><div style={S.col}><label style={S.lbl}>Ciklusi</label><input style={S.inp} type="number" value={proc.sfCount} onChange={e=>setProc(p=>({...p,sfCount:+e.target.value}))} min={1} max={6}/></div><div style={S.col}><label style={S.lbl}>Razmak (min)</label><input style={S.inp} type="number" value={proc.sfInterval} onChange={e=>setProc(p=>({...p,sfInterval:+e.target.value}))} min={15} max={60}/></div></div>},
+            {key:"coil",label:"🌀 Coil Fold",enabled:"coilEnabled",extra:<div style={S.row}><div style={S.col}><label style={S.lbl}>Ciklusi</label><input style={S.inp} type="number" value={proc.coilCount} onChange={e=>setProc(p=>({...p,coilCount:+e.target.value}))} min={1} max={4}/></div><div style={S.col}><label style={S.lbl}>Razmak (min)</label><input style={S.inp} type="number" value={proc.coilInterval} onChange={e=>setProc(p=>({...p,coilInterval:+e.target.value}))} min={15} max={60}/></div></div>},
+            {key:"lam",label:"📄 Laminacija",enabled:"lamEnabled",extra:null},
+            {key:"preShape",label:"⚪ Predoblikovanje",enabled:"preShapeEnabled",extra:null},
+            {key:"cold",label:"❄️ Hladna fermentacija",enabled:"coldEnabled",extra:<div style={S.row}><div style={S.col}><label style={S.lbl}>Min (h)</label><input style={S.inp} type="number" value={proc.coldMin} onChange={e=>setProc(p=>({...p,coldMin:+e.target.value}))} min={4} max={72}/></div><div style={S.col}><label style={S.lbl}>Max (h)</label><input style={S.inp} type="number" value={proc.coldMax} onChange={e=>setProc(p=>({...p,coldMax:+e.target.value}))} min={4} max={72}/></div></div>},
+          ].map(({key,label,enabled,extra})=>(
+            <div key={key} style={S.card}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:proc[enabled]&&extra?"12px":"0"}}>
+                <div style={S.sec}>{label}</div>
+                <button style={S.tog(proc[enabled])} onClick={()=>setProc(p=>({...p,[enabled]:!p[enabled]}))}>
+                  <div style={S.togD(proc[enabled])}/>
+                </button>
+              </div>
+              {proc[enabled]&&extra}
+            </div>
+          ))}
+        </>)}
+
+        {/* ── RASPORED ── */}
+        {tab==="schedule"&&(
+          <div style={S.card}>
+            <div style={S.sec}>📅 Dostupnost</div>
+            {avail.map((da,di)=>(
+              <div key={da.day} style={{marginBottom:"18px"}}>
+                <div style={{fontSize:"14px",color:"#c8a96e",fontWeight:"bold",marginBottom:"8px"}}>{DAYS_HR[da.day]}</div>
+                {da.blocks.map((b,bi)=>(
+                  <div key={bi} style={{display:"flex",gap:"6px",alignItems:"center",marginBottom:"6px"}}>
+                    <input style={{...S.inp,width:"90px"}} type="time" value={b.start} onChange={e=>{const u=[...avail];u[di]={...u[di],blocks:u[di].blocks.map((bl,i)=>i===bi?{...bl,start:e.target.value}:bl)};setAvail(u);}}/>
+                    <span style={{color:"#8a7a60"}}>–</span>
+                    <input style={{...S.inp,width:"90px"}} type="time" value={b.end} onChange={e=>{const u=[...avail];u[di]={...u[di],blocks:u[di].blocks.map((bl,i)=>i===bi?{...bl,end:e.target.value}:bl)};setAvail(u);}}/>
+                    <button style={{...S.btnSm,color:"#c85a5a"}} onClick={()=>{const u=[...avail];u[di]={...u[di],blocks:u[di].blocks.filter((_,i)=>i!==bi)};setAvail(u);}}>✕</button>
+                  </div>
+                ))}
+                <button style={S.btnSm} onClick={()=>{const u=[...avail];u[di]={...u[di],blocks:[...u[di].blocks,{start:"08:00",end:"12:00"}]};setAvail(u);}}>+ Dodaj</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── TIMELINE ── */}
+        {tab==="timeline"&&(<>
+          {tl?(
+            <>
+              <div style={{marginBottom:"12px"}}>
+                <span style={S.badge(tl.status)}>{statusInfo[tl.status]?.e} {statusInfo[tl.status]?.t}</span>
+              </div>
+              {(()=>{
+                const groups={};
+                tl.steps.forEach(s=>{const dk=fmtDate(s.time);if(!groups[dk])groups[dk]=[];groups[dk].push(s);});
+                return Object.entries(groups).map(([date,steps])=>(
+                  <div key={date}>
+                    <div style={{fontSize:"12px",color:"#8a7a60",fontWeight:"bold",padding:"8px 0 4px",textTransform:"uppercase",letterSpacing:"0.06em"}}>{date}</div>
+                    {steps.map(step=>{
+                      const isDone=done[step.key];
+                      return(
+                        <div key={step.key} style={S.stepC(step.color,isDone)} onClick={()=>setDone(p=>({...p,[step.key]:!isDone}))}>
+                          <div style={{fontSize:"18px",fontWeight:"bold",color:"#c8a96e",minWidth:"52px"}}>{fmtTime(step.time)}</div>
+                          <div style={{fontSize:"20px"}}>{step.icon}</div>
+                          <div style={{flex:1,fontSize:"14px",color:"#e8dcc8",textDecoration:isDone?"line-through":"none"}}>{step.label}</div>
+                          <div style={{fontSize:"16px",color:isDone?"#c8a96e":"#3a3020"}}>{isDone?"✓":"○"}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ));
+              })()}
+              <div style={{marginTop:"14px"}}>
+                <button style={S.btn} onClick={()=>{setKStep(0);setView("kitchen");}}>🍴 Kitchen Mode</button>
+              </div>
+            </>
+          ):(
+            <div style={{...S.card,textAlign:"center",color:"#8a7a60",padding:"40px"}}>
+              Unesi podatke u kartici Recept i odaberi željeno vrijeme pečenja.
+            </div>
+          )}
+        </>)}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
